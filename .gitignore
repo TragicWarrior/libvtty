@@ -15,3 +15,6 @@ TODO.md
 # test harness binaries (built with -DBUILD_TESTS=ON)
 /test_resize
 /test_bufapi
+
+# compressed CHANGELOG generated for the Debian packages
+changelog.gz
