@@ -127,12 +127,27 @@ via Homebrew.
 
 ## Debian Packages ##
 
-If you want to build a `.deb` for Debian or a Debian-based system
-(Ubuntu, etc.):
+To build `.deb` packages for Debian or a Debian-based system (Ubuntu,
+etc.), run this from the build directory.  It does not need root:
 
 ```
-sudo make package
+make package
 ```
+
+It produces two packages, named for the version and architecture:
+
+* `libvtty11_<version>_<arch>.deb` -- the shared library, which is all
+  a program built against libvtty needs to run
+* `libvtty-dev_<version>_<arch>.deb` -- the header, static library,
+  pkg-config file and the `vshell` demo, for building programs
+
+Install both with `sudo apt install ./libvtty11_*.deb ./libvtty-dev_*.deb`.
+The packages install to `/usr`; `make install` installs to `/usr/local`.
+Having both at once is harmless but confusing, so pick one.
+
+RPM packages are not built.  An RPM made on a Debian system would put
+the library in `lib/` where Fedora expects `lib64/`; build RPMs on an RPM
+system instead.
 
 # Performance Tuning #
 

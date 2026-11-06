@@ -1,3 +1,34 @@
+11.3.1
+
+Packaging
+* [Bryan Christ] "make package" builds two Debian packages, without
+  root:  libvtty11 (the shared library) and libvtty-dev (header, static
+  library, pkg-config file, the libvtty.so link and vshell).  They were
+  one package that lintian rejected:  no dependencies, a placeholder
+  description, a malformed maintainer, no copyright file, no ldconfig
+  trigger, unstripped binaries and group-writable directories.  The
+  packages now declare their dependencies, carry a shlibs file and an
+  ldconfig trigger, and pass lintian with warnings only.
+* [Bryan Christ] The package version is the library's full version.
+  CMake knew only major.minor and CPack filled in a patch level of 1,
+  so 11.3.0 was packaged as 11.3.1, and 11.2.0 and 11.2.1 would both
+  have been 11.2.1.  The version is now read from LIBVTTY_VERSION in
+  vtty.h, the one place it is kept.  The shared library file is named
+  for it too (libvtty.so.11.3.1); the soname stays libvtty.so.11.
+* [Bryan Christ] libvtty.a contains machine code.  Built with link-time
+  optimization it held only GCC's intermediate code, which links with
+  the same GCC version and nothing else.  The shared library keeps LTO.
+* [Bryan Christ] libvtty.so records the libraries it uses (ncursesw,
+  libutil, libm).  A program linked with only -lvtty failed with
+  undefined references.
+* [Bryan Christ] The pkg-config file works:  it had prefix /usr/local
+  inside a package that installs to /usr, and empty libdir, includedir
+  and Cflags.  Its prefix is now found from where the file sits, so it
+  is right for both, and Libs.private lists what a static link needs.
+* [Bryan Christ] RPM packages are no longer built.  rpmbuild is rarely
+  installed on a Debian system, which made "make package" fail, and an
+  RPM built there would put the library in lib/ instead of lib64/.
+
 11.3.0
 
 Characters the Linux console cannot draw

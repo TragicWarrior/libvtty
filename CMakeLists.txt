@@ -6,8 +6,21 @@ cmake_minimum_required(VERSION 3.10.2)
 #set(CMAKE_OSX_DEPLOYMENT_TARGET "10.14" CACHE STRING "Minimum OS X deployment version")
 
 project(libvtty C)
-set(MAJOR_VERSION 11)
-set(MINOR_VERSION 3)
+
+# The version is kept in one place, LIBVTTY_VERSION in vtty.h, and read
+# from there so the library, its pkg-config file and its packages always
+# carry the same major.minor.patch.
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/vtty.h" _vtty_version_line
+    REGEX "^#define[ \t]+LIBVTTY_VERSION[ \t]+\"[0-9]+\\.[0-9]+\\.[0-9]+\"")
+string(REGEX REPLACE ".*\"([0-9]+)\\.([0-9]+)\\.([0-9]+)\".*" "\\1;\\2;\\3"
+    _vtty_version_parts "${_vtty_version_line}")
+list(LENGTH _vtty_version_parts _vtty_version_count)
+if(NOT _vtty_version_count EQUAL 3)
+    message(FATAL_ERROR "could not read LIBVTTY_VERSION from vtty.h")
+endif()
+list(GET _vtty_version_parts 0 MAJOR_VERSION)
+list(GET _vtty_version_parts 1 MINOR_VERSION)
+list(GET _vtty_version_parts 2 PATCH_VERSION)
 
 message("CMAKE_SYSTEM_NAME: ${CMAKE_SYSTEM_NAME}")
 
@@ -37,7 +50,7 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O2 -std=c99 -Wall -fPIC -fno-plt")
 #set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O2 -std=c99 -Wall -fno-omit-frame-pointer -fPIC -fno-plt")
 #set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O2 -std=c99 -Wall -fsanitize=address -fPIC -fno-plt")
 #set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O1 -std=c99 -Wall -fstack-protector-strong -fPIC -fno-plt")
-set(PROJECT_DESCRIPTION "A rxvt/vt100 terminal emulator library written in C.")
+set(PROJECT_DESCRIPTION "Terminal emulator library for curses programs")
 
 if (("${CMAKE_C_COMPILER_ID}" STREQUAL "Clang") OR (("${CMAKE_C_COMPILER_ID}" STREQUAL "GNU") AND (CMAKE_C_COMPILER_VERSION VERSION_GREATER 6.0)))
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wextra")
@@ -241,6 +254,12 @@ if(ENABLE_BACKTRACE)
 endif()
 
 
+# The shared library records the libraries it calls into, so a program
+# that links only -lvtty still loads ncurses, libutil and libm with it.
+if (("${CMAKE_SYSTEM_NAME}" STREQUAL "Linux") AND (Curses_FOUND))
+    target_link_libraries(vtty-shared PRIVATE ${CURSES_LIBRARIES} -lutil -lm)
+endif()
+
 if ("${CMAKE_SYSTEM_NAME}" STREQUAL "Linux")
 
     if (Curses_FOUND)
@@ -334,6 +353,12 @@ if ("${CMAKE_SYSTEM_NAME}" STREQUAL "Darwin")
 endif()
 
 
+# The static library is built without link-time optimization.  With it,
+# the archive holds only GCC's intermediate code, which links with the
+# same GCC version and nothing else.  A program that links libvtty.a
+# statically still gets ordinary optimized code.
+set_property(TARGET vtty-static PROPERTY INTERPROCEDURAL_OPTIMIZATION FALSE)
+
 # CMake doesn't allow targets with the same name.  This renames them properly afterward.
 SET_TARGET_PROPERTIES(vtty-static PROPERTIES OUTPUT_NAME vtty CLEAN_DIRECT_OUTPUT 1)
 SET_TARGET_PROPERTIES(vtty-shared PROPERTIES OUTPUT_NAME vtty CLEAN_DIRECT_OUTPUT 1)
@@ -341,26 +366,29 @@ SET_TARGET_PROPERTIES(vtty-shared PROPERTIES OUTPUT_NAME vtty CLEAN_DIRECT_OUTPU
 # The shared library carries a versioned soname (libvtty.so.11) so that a
 # program built against one major version is never loaded against another.
 SET_TARGET_PROPERTIES(vtty-shared PROPERTIES
-    VERSION ${MAJOR_VERSION}.${MINOR_VERSION}
+    VERSION ${MAJOR_VERSION}.${MINOR_VERSION}.${PATCH_VERSION}
     SOVERSION ${MAJOR_VERSION})
 
 # set the subst vars that configure_file() will use
-set(PROJECT_VERSION ${MAJOR_VERSION}.${MINOR_VERSION})
+set(PROJECT_VERSION ${MAJOR_VERSION}.${MINOR_VERSION}.${PATCH_VERSION})
 
-set(PKG_CONFIG_LIBS
-    "-lvtty"
-)
+# what a program linking the static library needs as well
+set(PKG_CONFIG_LIBS_PRIVATE "-lncursesw -lutil -lm")
 
+# @ONLY:  the ${...} in the template are pkg-config's own variables.  the
+# prefix is found from where the .pc file sits, so the same file is right
+# for /usr/local (make install) and /usr (the packages).
 configure_file(
   "${CMAKE_CURRENT_SOURCE_DIR}/pkg-config.pc.cmake"
   "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}.pc"
+  @ONLY
 )
 
 if ("${CMAKE_SYSTEM_NAME}" STREQUAL "Linux")
 
     if (Curses_FOUND)
         if(DEFINE_CURSES)
-            install (TARGETS vshell DESTINATION bin)
+            install (TARGETS vshell DESTINATION bin COMPONENT dev)
         endif(DEFINE_CURSES)
     endif()
 
@@ -369,7 +397,7 @@ endif()
 if ("${CMAKE_SYSTEM_NAME}" STREQUAL "FreeBSD")
 
     if(DEFINE_CURSES)
-        install (TARGETS vshell DESTINATION bin)
+        install (TARGETS vshell DESTINATION bin COMPONENT dev)
     endif(DEFINE_CURSES)
 
 endif()
@@ -377,13 +405,41 @@ endif()
 if ("${CMAKE_SYSTEM_NAME}" STREQUAL "Darwin")
 
     if(DEFINE_CURSES)
-        install (TARGETS vshell DESTINATION bin)
+        install (TARGETS vshell DESTINATION bin COMPONENT dev)
     endif(DEFINE_CURSES)
 
 endif()
 
-install (TARGETS vtty-static vtty-shared DESTINATION lib)
-install (FILES vtty.h DESTINATION include)
+# Every file is given a component, which decides the Debian package it
+# goes in:  "runtime" is libvtty11, what a program needs to run, and
+# "dev" is libvtty-dev, what is needed to build one.  A plain
+# "make install" installs both.
+#
+# The shared library is installed twice:  its real file and the
+# libvtty.so.11 soname link go with the runtime, the bare libvtty.so
+# link a linker looks for goes with the development files.
+install (TARGETS vtty-shared LIBRARY DESTINATION lib
+    COMPONENT runtime NAMELINK_SKIP)
+install (TARGETS vtty-shared LIBRARY DESTINATION lib
+    COMPONENT dev NAMELINK_ONLY)
+install (TARGETS vtty-static ARCHIVE DESTINATION lib COMPONENT dev)
+install (FILES vtty.h DESTINATION include COMPONENT dev)
+
+# Debian wants a copyright file (in its machine-readable format) and a
+# compressed changelog in each package's own doc directory.  gzip -n
+# leaves the time stamp out, so the same source gives the same package.
+if ("${CMAKE_SYSTEM_NAME}" STREQUAL "Linux")
+    execute_process(
+        COMMAND gzip -9 -n -c "${CMAKE_CURRENT_SOURCE_DIR}/CHANGELOG"
+        OUTPUT_FILE "${CMAKE_CURRENT_BINARY_DIR}/changelog.gz")
+
+    install (FILES "${CMAKE_CURRENT_SOURCE_DIR}/packaging/copyright"
+        "${CMAKE_CURRENT_BINARY_DIR}/changelog.gz"
+        DESTINATION share/doc/libvtty${MAJOR_VERSION} COMPONENT runtime)
+    install (FILES "${CMAKE_CURRENT_SOURCE_DIR}/packaging/copyright"
+        "${CMAKE_CURRENT_BINARY_DIR}/changelog.gz"
+        DESTINATION share/doc/libvtty-dev COMPONENT dev)
+endif()
 
 # Install pkgconfig files to libdata on BSD, otherwise lib
 if(CMAKE_SYSTEM_NAME MATCHES "BSD")
@@ -391,7 +447,8 @@ if(CMAKE_SYSTEM_NAME MATCHES "BSD")
 else()
     set(PKG_CONFIG_INSTALL_DIR "lib/pkgconfig")
 endif()
-install (FILES "${PROJECT_BINARY_DIR}/${PROJECT_NAME}.pc" DESTINATION ${PKG_CONFIG_INSTALL_DIR})
+install (FILES "${PROJECT_BINARY_DIR}/${PROJECT_NAME}.pc"
+    DESTINATION ${PKG_CONFIG_INSTALL_DIR} COMPONENT dev)
 
 # Refresh the dynamic linker's cache after installing, so a newly
 # installed libvtty.so is found straight away.  Without it a program
@@ -458,10 +515,78 @@ if(BUILD_TESTS)
     endforeach()
 endif()
 
-set(CPACK_GENERATOR "DEB;RPM")
-set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Bryan")
-SET(CPACK_PACKAGE_VERSION_MAJOR "${MAJOR_VERSION}")
-SET(CPACK_PACKAGE_VERSION_MINOR "${MINOR_VERSION}")
-set(CPACK_PACKAGE_FILE_NAME "${CMAKE_PROJECT_NAME}-${MAJOR_VERSION}.${MINOR_VERSION}")
-set(CPACK_COMPONENTS_ALL Libraries)
+#
+# Debian packages:  "make package" builds two .deb files, no root needed.
+#
+#   libvtty11      the shared library (Section libs)
+#   libvtty-dev    header, static library, pkg-config file, the
+#                  libvtty.so link and the vshell demo (Section libdevel)
+#
+# The library's major version is in the runtime package's name, so a new
+# major version installs beside the old one instead of replacing it.
+# dpkg-shlibdeps works out what each package depends on, and the runtime
+# package gets a shlibs file and the ldconfig trigger.
+#
+# RPM is not built:  an RPM made on a Debian system would put the library
+# in lib/ where Fedora expects lib64/.  Build RPMs on an RPM system.
+#
+set(CPACK_GENERATOR "DEB")
+set(CPACK_PACKAGE_NAME "libvtty")
+set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+set(CPACK_PACKAGE_VERSION_MAJOR "${MAJOR_VERSION}")
+set(CPACK_PACKAGE_VERSION_MINOR "${MINOR_VERSION}")
+set(CPACK_PACKAGE_VERSION_PATCH "${PATCH_VERSION}")
+set(CPACK_PACKAGE_CONTACT "Bryan Christ <bryan.christ@gmail.com>")
+set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/TragicWarrior/libvtty")
+set(CPACK_STRIP_FILES ON)
+
+# directories the packages create are 0755, whatever the builder's umask
+set(CMAKE_INSTALL_DEFAULT_DIRECTORY_PERMISSIONS
+    OWNER_READ OWNER_WRITE OWNER_EXECUTE
+    GROUP_READ GROUP_EXECUTE
+    WORLD_READ WORLD_EXECUTE)
+
+set(CPACK_DEB_COMPONENT_INSTALL ON)
+set(CPACK_COMPONENTS_ALL runtime dev)
+set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
+set(CPACK_DEBIAN_PACKAGE_MAINTAINER "${CPACK_PACKAGE_CONTACT}")
+set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
+set(CPACK_DEBIAN_PACKAGE_CONTROL_STRICT_PERMISSION ON)
+
+set(CPACK_DEBIAN_PACKAGE_GENERATE_SHLIBS ON)
+set(CPACK_DEBIAN_PACKAGE_GENERATE_SHLIBS_POLICY ">=")
+
+# a package description:  the first line is the synopsis, a blank line
+# separates paragraphs (CPack writes the " ." Debian wants there).  this
+# works because CPACK_PACKAGE_DESCRIPTION_SUMMARY is left unset:  when it
+# is set, CPack puts it in front of every package's description.
+set(CPACK_DEBIAN_RUNTIME_PACKAGE_NAME "libvtty${MAJOR_VERSION}")
+set(CPACK_DEBIAN_RUNTIME_PACKAGE_SECTION "libs")
+
+# the linker cache is refreshed by a dpkg trigger, as Debian asks
+set(CPACK_DEBIAN_RUNTIME_PACKAGE_CONTROL_EXTRA
+    "${CMAKE_CURRENT_SOURCE_DIR}/packaging/triggers")
+set(CPACK_DEBIAN_RUNTIME_DESCRIPTION
+"terminal emulator library for curses programs
+libvtty runs a program in a pseudo-terminal and keeps what it draws in
+an off-screen buffer that a host program renders into a curses window.
+It emulates the VT100, rxvt, xterm, xterm-256color and Linux console
+terminals, with 24-bit color, mouse reporting, scrollback and window
+titles.
+
+This package holds the shared library.  It was named libvterm until
+version 11.")
+
+set(CPACK_DEBIAN_DEV_PACKAGE_NAME "libvtty-dev")
+set(CPACK_DEBIAN_DEV_PACKAGE_SECTION "libdevel")
+set(CPACK_DEBIAN_DEV_PACKAGE_DEPENDS
+    "libvtty${MAJOR_VERSION} (= ${PROJECT_VERSION}), libncurses-dev")
+set(CPACK_DEBIAN_DEV_DESCRIPTION
+"terminal emulator library for curses programs - development files
+libvtty runs a program in a pseudo-terminal and keeps what it draws in
+an off-screen buffer that a host program renders into a curses window.
+
+This package holds the header, the static library, the pkg-config file
+and vshell, a small tmux-like program that demonstrates the library.")
+
 include(CPack)
